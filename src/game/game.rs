@@ -20,7 +20,7 @@ impl Model {
         let mut dead_agents_this_step = 0;
 
         if is_tsunami {
-            println!("TSUNAMI IS COMMING ");
+            println!("TSUNAMI IS COMMING ----- {}", tsunami_number);
             let tsunami_data = self.grid.tsunami_data[tsunami_number].clone();
 
             for i in (0..self.agents.len()).rev() {

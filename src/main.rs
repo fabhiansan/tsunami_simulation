@@ -147,13 +147,14 @@ fn main() -> io::Result<()> {
     export_agent_statistics(&agents).expect("Failed to export agent statistics");
     
     let tsunami_data = read_tsunami_data(
-        // "./data_pacitan/tsunami_pacitan/test1.asc",
-        "./data_pacitan/tsunami_pacitan/tsunami_pacitan_all/asc_tsunami_pacitan_1.asc",
+        "./data_pacitan/tsunami_pacitan/tsunami_pacitan_all",
         grid.width,
         grid.height,
     )
-    .unwrap();
-    grid.tsunami_data.push(tsunami_data);
+    .expect("Failed to read tsunami data");
+
+    println!("Loaded {} tsunami data files", tsunami_data.len());
+    grid.tsunami_data = tsunami_data;
     let tsunami_len = grid.tsunami_data.len();
     println!("Number of tsunami data {}", tsunami_len);
 
@@ -400,41 +401,78 @@ pub fn load_population_from_ascii(path: &str, ncols: u32, nrows: u32) -> io::Res
     Ok(population)
 }
 
-fn read_tsunami_data(path: &str, ncols: u32, nrows: u32) -> io::Result<Vec<Vec<u32>>> {
-    println!("Loading tsunami data from {}", path);
+// use std::fs::{self, File};
+use std::path::{Path, PathBuf};
 
-    let file = std::fs::File::open(path)?;
-    let reader = std::io::BufReader::new(file);
+fn read_tsunami_data_file(path: &Path, ncols: u32, nrows: u32) -> io::Result<Vec<Vec<u32>>> {
+    let file = File::open(path)?;
+    let reader = io::BufReader::new(file);
     let mut lines = reader.lines();
 
-    // Lewati 6 baris header
+    // Skip header lines
     for _ in 0..6 {
         lines.next();
     }
 
-    let mut tsunami_data: Vec<Vec<u32>> = Vec::with_capacity(nrows as usize);
+    let mut tsunami_data = Vec::new();
 
     for line in lines {
         let line = line?;
-        let tokens: Vec<&str> = line.split_whitespace().collect();
-        if tokens.len() < ncols as usize {
-            continue;
-        }
-        let row: Vec<u32> = tokens
-            .iter()
+        let row: Vec<u32> = line
+            .split_whitespace()
+            // .iter()
             .take(ncols as usize)
-            // .map(|token| token.parse::<i32>().unwrap_or(0) + 1000)
-            .filter_map(|token| token.parse::<f64>().ok().map(|val| (val) as u32))
+            .filter_map(|token| token.parse::<f64>().ok().map(|val| val as u32))
             .collect();
         tsunami_data.push(row);
     }
 
-    if tsunami_data.len() != nrows as usize {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "Dimensi data tsunami_data tidak sesuai dengan grid.",
-        ));
+    // Fill missing rows with zeros if needed
+    while tsunami_data.len() < nrows as usize {
+        tsunami_data.push(vec![0; ncols as usize]);
     }
 
     Ok(tsunami_data)
+}
+
+fn read_tsunami_data(dir_path: &str, ncols: u32, nrows: u32) -> io::Result<Vec<Vec<Vec<u32>>>> {
+    let mut tsunami_files: Vec<PathBuf> = fs::read_dir(dir_path)?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.starts_with("asc_tsunami_pacitan_") && name.ends_with(".asc"))
+                .unwrap_or(false)
+        })
+        .collect();
+
+    // Sort files by their numeric index
+    tsunami_files.sort_by_key(|path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.trim_start_matches("asc_tsunami_pacitan_")
+                          .trim_end_matches(".asc")
+                          .parse::<u32>()
+                          .ok())
+            .unwrap_or(0)
+    });
+
+    // Read all tsunami data files
+    let mut all_tsunami_data = Vec::new();
+    for file_path in tsunami_files {
+        match read_tsunami_data_file(&file_path, ncols, nrows) {
+            Ok(data) => all_tsunami_data.push(data),
+            Err(e) => eprintln!("Error reading tsunami file {:?}: {}", file_path, e),
+        }
+    }
+
+    if all_tsunami_data.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "No valid tsunami data files found",
+        ));
+    }
+
+    Ok(all_tsunami_data)
 }
