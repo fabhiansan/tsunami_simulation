@@ -24,7 +24,7 @@ pub struct Grid {
     // Jarak ke jalan/shelter sudah dihitung sebelumnya
     pub distance_to_road: Vec<Vec<Option<u32>>>,
     pub distance_to_shelter: Vec<Vec<Option<u32>>>,
-    pub shelter_agents: HashMap<u32, Vec<usize>>,
+    pub shelter_agents: HashMap<u32, Vec<(usize, AgentType)>>,
     pub population: Vec<Vec<u32>>,
     pub tsunami_data: Vec<Vec<Vec<u32>>>
 }
@@ -49,11 +49,11 @@ impl Grid {
         }
     }
 
-    pub fn add_to_shelter(&mut self, shelter_id: u32, agent_id: usize) {
+    pub fn add_to_shelter(&mut self, shelter_id: u32, agent_id: usize, agent_type: AgentType) {
         self.shelter_agents
             .entry(shelter_id)
             .or_insert(Vec::new())
-            .push(agent_id);
+            .push((agent_id, agent_type));
     }
 
     pub fn add_agent(&mut self, x: u32, y: u32, agent_id: usize) {

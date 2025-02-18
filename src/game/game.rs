@@ -1,4 +1,4 @@
-use super::agent::{Agent, DeadAgentsData};
+use super::agent::{Agent, AgentType, DeadAgentsData};
 use super::grid::{Grid, Terrain};
 use crate::ShelterData;
 use crate::SimulationData;
@@ -12,6 +12,7 @@ pub struct Model {
     pub grid: Grid,
     pub agents: Vec<Agent>,
     pub dead_agents: usize,
+    pub dead_agent_types: Vec<AgentType>,
 }
 
 impl Model {
@@ -22,25 +23,21 @@ impl Model {
             println!("TSUNAMI IS COMMING ");
             let tsunami_data = self.grid.tsunami_data[tsunami_number].clone();
 
-            // TODO Implement tsunami to calculate who die
             for i in (0..self.agents.len()).rev() {
                 let agent = &self.agents[i];
-                // Pastikan koordinat agen tidak melebihi batas matriks
                 if (agent.y as usize) < tsunami_data.len()
                     && (agent.x as usize) < tsunami_data[0].len()
                 {
-                    // Jika nilai pada posisi agen bukan 0, berarti agen tersebut terkena tsunami
                     let tsunami_height = tsunami_data[agent.y as usize][agent.x as usize];
                     if tsunami_height > 0 {
                         dead_agents_this_step += 1;
-                        // Hapus agen dari grid (misalnya, jika grid menyimpan referensi agen per sel)
                         self.grid.remove_agent(agent.x, agent.y, i);
                         println!(
                             "Agent {} mati akibat tsunami pada koordinat ({}, {})",
                             i, agent.x, agent.y
                         );
 
-                        // Hapus agen dari daftar agen
+                        self.dead_agent_types.push(agent.agent_type);
                         self.agents.remove(i);
                     }
                 }
@@ -56,28 +53,20 @@ impl Model {
             }
         }
 
-        // if let Err(e) = self.save_dead_agents_data(step, dead_agents_this_step) {
-        //     eprintln!("Gagal menyimpan data agen mati: {}", e);
-        // }
-
-        // Update total dead agents
         self.dead_agents += dead_agents_this_step;
 
         let mut rng = rand::thread_rng();
         let mut agent_order: Vec<usize> = (0..self.agents.len()).collect();
 
-        // Reset remaining_steps untuk setiap agen
         for agent in &mut self.agents {
             agent.remaining_steps = agent.speed;
         }
 
-        // Lakukan pergerakan sesuai jumlah langkah maksimum agen
         for _ in 0..self.agents.iter().map(|a| a.speed).max().unwrap_or(1) {
             agent_order.shuffle(&mut rng);
             let mut reserved_cells = HashSet::new();
             let mut moves = Vec::new();
 
-            // Pass 1: Kumpulkan pergerakan
             for &id in &agent_order {
                 let agent = &self.agents[id];
                 if agent.remaining_steps == 0 || self.is_in_shelter(agent.x, agent.y) {
@@ -89,7 +78,6 @@ impl Model {
                 }
             }
 
-            // Pass 2: Eksekusi pergerakan
             for &(id, new_x, new_y, fallback) in &moves {
                 let (old_x, old_y) = {
                     let agent = &self.agents[id];
@@ -111,7 +99,6 @@ impl Model {
                     agent.x = new_x;
                     agent.y = new_y;
 
-                    // Jika gerakan fallback, kurangi remaining_steps dua kali lipat
                     if fallback {
                         if agent.remaining_steps >= 2 {
                             agent.remaining_steps -= 2;
@@ -122,26 +109,24 @@ impl Model {
                         agent.remaining_steps -= 1;
                     }
 
-                    // todo change add to shelter to receive value of grid instead of their coordinates
-                    // if matches!(
-                    //     self.grid.terrain[new_y as usize][new_x as usize],
-                    //     Terrain::Shelter(_)
-                    // ) {
-                    //     self.grid.add_to_shelter( , id);
-                    //     agent.remaining_steps = 0;
-                    // } else {
-                    //     self.grid.add_agent(new_x, new_y, id);
-                    // }
-                    if let Terrain::Shelter(shelter_id) =
-                        self.grid.terrain[new_y as usize][new_x as usize]
-                    {
-                        self.grid.add_to_shelter(shelter_id, id);
-                        agent.remaining_steps = 0;
-                    } else {
-                        self.grid.add_agent(new_x, new_y, id);
+                    if self.is_in_shelter(new_x, new_y) {
+                        self.enter_shelter(id, new_x, new_y);
                     }
                 }
+
+                self.grid.add_agent(new_x, new_y, id);
             }
+        }
+    }
+
+    pub fn is_in_shelter(&self, x: u32, y: u32) -> bool {
+        matches!(self.grid.terrain[y as usize][x as usize], Terrain::Shelter(_))
+    }
+
+    pub fn enter_shelter(&mut self, agent_id: usize, x: u32, y: u32) {
+        if let Terrain::Shelter(shelter_id) = self.grid.terrain[y as usize][x as usize] {
+            let agent = &self.agents[agent_id];
+            self.grid.add_to_shelter(shelter_id, agent_id, agent.agent_type);
         }
     }
 
@@ -153,7 +138,6 @@ impl Model {
         let dirs = [(0, 1), (0, -1), (1, 0), (-1, 0)];
         let mut candidates = Vec::new();
 
-        // Jika agen tidak berada di Road, cari jalan terdekat
         if self.grid.terrain[agent.y as usize][agent.x as usize] != Terrain::Road {
             if let Some(current_dist) =
                 self.grid.distance_to_road[agent.y as usize][agent.x as usize]
@@ -173,13 +157,6 @@ impl Model {
                         if !reserved.contains(&(nx, ny))
                             && self.grid.agents_in_cell[ny as usize][nx as usize].is_empty()
                         {
-                            // if let Some(new_dist) =
-                            //     self.grid.distance_to_road[ny as usize][nx as usize]
-                            // {
-                            //     if new_dist < current_dist {
-                            //         candidates.push((new_dist, nx, ny));
-                            //     }
-                            // }
                             if let Some(new_dist) =
                                 self.grid.distance_to_road[ny as usize][nx as usize]
                             {
@@ -197,9 +174,7 @@ impl Model {
                 let (_, nx, ny) = candidates[0];
                 return Some((nx, ny, false));
             }
-        }
-        // Jika agen berada di Road, cari shelter terdekat
-        else if self.grid.terrain[agent.y as usize][agent.x as usize] == Terrain::Road {
+        } else if self.grid.terrain[agent.y as usize][agent.x as usize] == Terrain::Road {
             for &(dx, dy) in &dirs {
                 let nx = agent.x as i32 + dx;
                 let ny = agent.y as i32 + dy;
@@ -209,7 +184,6 @@ impl Model {
                     let nx = nx as u32;
                     let ny = ny as u32;
 
-                    // Prioritaskan jika ditemukan shelter
                     if matches!(
                         self.grid.terrain[ny as usize][nx as usize],
                         Terrain::Shelter(_)
@@ -218,7 +192,6 @@ impl Model {
                         return Some((nx, ny, false));
                     }
 
-                    // Jika tidak, cari jalan menuju shelter melalui Road
                     if (self.grid.terrain[ny as usize][nx as usize] == Terrain::Road
                         || matches!(
                             self.grid.terrain[ny as usize][nx as usize],
@@ -242,7 +215,6 @@ impl Model {
             }
         }
 
-        // Jika tidak ada pilihan lain, lakukan fallback move
         let fallback_moves: Vec<(u32, u32)> = dirs
             .iter()
             .filter_map(|&(dx, dy)| {
@@ -274,13 +246,6 @@ impl Model {
         }
     }
 
-    pub fn is_in_shelter(&self, x: u32, y: u32) -> bool {
-        matches!(
-            self.grid.terrain[y as usize][x as usize],
-            Terrain::Shelter(_)
-        )
-    }
-
     pub fn save_shelter_data(
         &self,
         death_json_counter: &Vec<serde_json::Value>,
@@ -288,75 +253,74 @@ impl Model {
     ) -> std::io::Result<()> {
         let filename = "output/shelter_data.json";
 
-        // Gabungkan semua data ke dalam satu objek JSON
+        let mut shelter_counts: HashMap<String, ShelterAgentCounts> = HashMap::new();
+        
+        for (&shelter_id, agents) in &self.grid.shelter_agents {
+            let shelter_key = format!("shelter_{}", shelter_id);
+            let counts = shelter_counts.entry(shelter_key).or_insert(ShelterAgentCounts::new());
+            
+            for &(_, agent_type) in agents {
+                match agent_type {
+                    AgentType::Child => counts.child += 1,
+                    AgentType::Teen => counts.teen += 1,
+                    AgentType::Adult => counts.adult += 1,
+                    AgentType::Elder => counts.elder += 1,
+                    AgentType::Car => counts.car += 1,
+                }
+            }
+        }
+
+        let current_shelter_data: HashMap<String, serde_json::Value> = shelter_counts
+            .iter()
+            .map(|(k, v)| (k.clone(), json!({
+                "child": v.child,
+                "teen": v.teen,
+                "adult": v.adult,
+                "elder": v.elder,
+                "car": v.car
+            })))
+            .collect();
+
         let data = json!({
             "death_json_counter": death_json_counter,
-            "shelter_json_counter": shelter_json_counter
+            "shelter_json_counter": shelter_json_counter,
+            "shelter_agent_types": current_shelter_data,
         });
 
-        // Tulis data ke file dengan format pretty JSON
         let file = File::create(filename)?;
         serde_json::to_writer_pretty(file, &data)?;
         println!("Updated simulation data in {}", filename);
 
         Ok(())
     }
+}
 
-    // pub fn save_shelter_data(&self, step: u32, total_dead_agents: usize) -> std::io::Result<()> {
-    //     let filename = "output/shelter_data.json";
+pub struct ShelterAgentCounts {
+    pub child: u32,
+    pub teen: u32,
+    pub adult: u32,
+    pub elder: u32,
+    pub car: u32,
+}
 
-    //     // Read existing data or create new
-    //     let mut simulation_data = if let Ok(file) = File::open(filename) {
-    //         serde_json::from_reader(file).unwrap_or_else(|_| SimulationData::default())
-    //     } else {
-    //         SimulationData::default()
-    //     };
+impl ShelterAgentCounts {
+    pub fn new() -> Self {
+        ShelterAgentCounts {
+            child: 0,
+            teen: 0,
+            adult: 0,
+            elder: 0,
+            car: 0,
+        }
+    }
 
-    //     // Create new record for current step
-    //     let mut shelter_data = ShelterData {
-    //         step,
-    //         shelters: HashMap::new(),
-    //         total_dead_agents,
-    //     };
-
-    //     // Get previous shelter counts or start with 0
-    //     let prev_shelters = if let Some(last_record) = simulation_data.records.last() {
-    //         last_record.shelters.clone()
-    //     } else {
-    //         HashMap::new()
-    //     };
-
-    //     // Update shelter counts (accumulate from previous step)
-    //     for &(x, y, id) in &self.grid.shelters {
-    //         let shelter_key = format!("shelter_{}", id);
-    //         let current_count = if let Some(agents) = self.grid.shelter_agents.get(&(x, y)) {
-    //             agents.len() as u32
-    //         } else {
-    //             0
-    //         };
-    //         let prev_count = prev_shelters.get(&shelter_key).copied().unwrap_or(0);
-    //         shelter_data.shelters.insert(shelter_key, prev_count + current_count);
-    //     }
-
-    //     // Add new record
-    //     simulation_data.records.push(shelter_data);
-
-    //     // Write back to file
-    //     let file = File::create(filename)?;
-    //     serde_json::to_writer_pretty(file, &simulation_data)?;
-    //     println!("Updated simulation data in {}", filename);
-
-    //     Ok(())
-    // }
-
-    // pub fn save_dead_agents_data(&self, step: u32, dead_agents: usize) -> std::io::Result<()> {
-    //     let dead_agents_data = DeadAgentsData { step, dead_agents };
-    //     let filename = format!("output/dead_agents_data_{}.json", step);
-    //     let file = std::fs::File::create(&filename)?;
-
-    //     serde_json::to_writer_pretty(file, &dead_agents_data)?;
-    //     println!("Saved dead agents data to {}", filename);
-
-    //     Ok(())
-    // }
+    pub fn to_json(&self) -> serde_json::Value {
+        json!({
+            "child": self.child,
+            "teen": self.teen,
+            "adult": self.adult,
+            "elder": self.elder,
+            "car": self.car,
+        })
+    }
 }
