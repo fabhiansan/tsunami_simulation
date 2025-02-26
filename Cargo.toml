@@ -5,13 +5,13 @@ edition = "2021"
 authors = ["fabhianto.maoludyo@gmail.com"]
 description = "A tsunami evacuation simulation library"
 license = "MIT"
-repository = "https://github.com/yourusername/tsunami_simulation"
+repository = "https://github.com/fabhiansan/tsunami_simulation"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 rayon = "1.7"
-rand = "0.8"
+rand = { version = "0.8", features = ["std"] }
 
 [lib]
 name = "tsunami_simulation"

@@ -1,11 +1,8 @@
-use super::agent::{Agent, AgentType, DeadAgentsData};
+use super::agent::{Agent, AgentType};
 use super::grid::{Grid, Terrain};
-use crate::ShelterData;
-use crate::SimulationData;
-use rand::prelude::IndexedRandom;
 use rand::seq::SliceRandom;
 use serde_json::json;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 
 pub struct Model {

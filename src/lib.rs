@@ -6,6 +6,10 @@ use game::grid::{load_grid_from_ascii, Grid, Terrain};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+use rayon::prelude::*;
 
 // Re-export important types and modules
 pub use game::agent;
@@ -72,14 +76,14 @@ struct AgentStepData {
 }
 
 impl AgentDataCollector {
-    fn new(grid: Grid) -> Self {
+    pub fn new(grid: Grid) -> Self {
         Self {
             data: Vec::new(),
             grid,
         }
     }
 
-    fn collect_step(&mut self, model: &Model, step: u32) {
+    pub fn collect_step(&mut self, model: &Model, step: u32) {
         for agent in &model.agents {
             if agent.is_alive {
                 let real_x = model.grid.xllcorner + (agent.x as f64 * model.grid.cellsize);
@@ -99,6 +103,124 @@ impl AgentDataCollector {
             }
         }
     }
+
+    pub fn get_data(&self) -> &Vec<AgentStepData> {
+        &self.data
+    }
+}
+
+pub fn load_population_and_create_agents(
+    path: &str,
+    ncols: u32,
+    nrows: u32,
+    grid: &mut Grid,
+    agents: &mut Vec<Agent>,
+    next_agent_id: &mut usize,
+) -> io::Result<()> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut lines = reader.lines();
+
+    // Skip header lines
+    for _ in 0..6 {
+        lines.next();
+    }
+
+    let mut population: Vec<Vec<u32>> = Vec::with_capacity(nrows as usize);
+    for line in lines {
+        let line = line?;
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        if tokens.len() < ncols as usize {
+            continue;
+        }
+        let row: Vec<u32> = tokens
+            .iter()
+            .take(ncols as usize)
+            .map(|token| token.parse::<u32>().unwrap_or(0))
+            .collect();
+        population.push(row);
+    }
+
+    if population.len() != nrows as usize {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "Population data dimensions don't match grid",
+        ));
+    }
+
+    grid.population = population.clone();
+
+    for (y, row) in population.iter().enumerate() {
+        for (x, &pop) in row.iter().enumerate() {
+            if pop != 0 {
+                let is_on_road = grid.terrain[y][x] == Terrain::Road;
+                let agent_type = AgentType::random();
+
+                let mut agent = Agent::new(
+                    *next_agent_id,
+                    x as u32,
+                    y as u32,
+                    agent_type,
+                    is_on_road,
+                );
+                agent.remaining_steps = agent.speed;
+
+                grid.add_agent(x as u32, y as u32, agent.id);
+                agents.push(agent);
+                *next_agent_id += 1;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub fn export_agents_to_geojson(collector: &AgentDataCollector, filename: &str) -> io::Result<()> {
+    use serde_json::{json, Value};
+    use std::collections::HashMap;
+    use std::fs::File;
+    use std::io::Write;
+
+    let mut grouped_data: HashMap<(u32, String), Vec<Vec<f64>>> = HashMap::new();
+
+    for agent_data in collector.get_data() {
+        let key = (agent_data.step, agent_data.agent_type.clone());
+        let coordinates = grouped_data.entry(key).or_insert_with(Vec::new);
+        coordinates.push(vec![agent_data.x, agent_data.y]);
+    }
+
+    let features: Vec<Value> = grouped_data
+        .into_iter()
+        .map(|((step, agent_type), coordinates)| {
+            json!({
+                "type": "Feature",
+                "geometry": {
+                    "type": "MultiPoint",
+                    "coordinates": coordinates
+                },
+                "properties": {
+                    "timestamp": step,
+                    "agent_type": agent_type
+                }
+            })
+        })
+        .collect();
+
+    let geojson = json!({
+        "type": "FeatureCollection",
+        "crs": {
+            "type": "name",
+            "properties": {
+                "name": "EPSG:4326"
+            }
+        },
+        "features": features
+    });
+
+    let mut file = File::create(filename)?;
+    file.write_all(serde_json::to_string_pretty(&geojson)?.as_bytes())?;
+
+    Ok(())
 }
 
 pub fn export_agent_statistics(agents: &Vec<Agent>) -> io::Result<()> {
