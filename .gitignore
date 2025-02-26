@@ -1,1 +1,9 @@
 /target
+**/*.rs.bk
+Cargo.lock
+*.json
+*.asc
+/data*
+/output
+/19feb
+.DS_Store

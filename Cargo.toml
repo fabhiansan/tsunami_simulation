@@ -1,13 +1,23 @@
 [package]
-name = "skia-abm"
-version = "0.1.0"
+name = "tsunami_simulation"
+version = "0.1.1"
 edition = "2021"
+authors = ["fabhianto.maoludyo@gmail.com"]
+description = "A tsunami evacuation simulation library"
+license = "MIT"
+repository = "https://github.com/fabhiansan/tsunami_simulation"
 
 [dependencies]
-ggez = "0.9.3"
-grid = "0.16.0"
-rand = "0.9.0"
-rayon = "1.10.0"
-serde = "1.0.217"
-serde_json = "1.0.137"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rayon = "1.7"
+rand = { version = "0.8", features = ["std"] }
+
+[lib]
+name = "tsunami_simulation"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tsunami_simulation"
+path = "src/bin/tsunami_simulation.rs"
 

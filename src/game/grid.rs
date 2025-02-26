@@ -26,7 +26,9 @@ pub struct Grid {
     pub distance_to_shelter: Vec<Vec<Option<u32>>>,
     pub shelter_agents: HashMap<u32, Vec<(usize, AgentType)>>,
     pub population: Vec<Vec<u32>>,
-    pub tsunami_data: Vec<Vec<Vec<u32>>>
+    pub tsunami_data: Vec<Vec<Vec<u32>>>,
+    pub nrow: u32,
+    pub ncol: u32
 }
 
 impl Grid {
@@ -54,6 +56,8 @@ impl Grid {
             .entry(shelter_id)
             .or_insert(Vec::new())
             .push((agent_id, agent_type));
+
+        // remove agent from grid
     }
 
     pub fn add_agent(&mut self, x: u32, y: u32, agent_id: usize) {
@@ -218,6 +222,14 @@ pub fn load_grid_from_ascii(
         .parse()
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "Invalid cellsize value"))?;
 
+    println!("Cellsize: {}", cellsize);
+    println!("Nrows: {}", nrows);
+    println!("Ncols: {}", ncols);
+    println!("xll_line: {}", xll_line);
+    println!("yll_line: {}", yll_line);
+    println!("Xllcorner: {:.10}", xllcorner);
+    println!("Yllcorner: {:.10}", yllcorner);
+
     // Inisialisasi struktur grid sesuai dimensi yang didapatkan dari header
     let mut terrain = vec![vec![Terrain::Blocked; ncols as usize]; nrows as usize];
     let mut shelters = Vec::new();
@@ -248,10 +260,10 @@ pub fn load_grid_from_ascii(
                         ));
                     }
                 }
-                "2" => {
-                    shelters.push((x as u32, y as u32, 0));  // Default shelter ID
-                    Terrain::Shelter(0)
-                }
+                // "2" => {
+                //     shelters.push((x as u32, y as u32, 0));  // Default shelter ID
+                //     Terrain::Shelter(0)
+                // }
                 "3" => {
                     agent_positions.push((x as u32, y as u32, AgentType::Adult));
                     Terrain::Road
@@ -269,11 +281,6 @@ pub fn load_grid_from_ascii(
                 "6" => {
                     // Elder agent
                     agent_positions.push((x as u32, y as u32, AgentType::Elder));
-                    Terrain::Road
-                }
-                "7" => {
-                    // Car agent
-                    agent_positions.push((x as u32, y as u32, AgentType::Car));
                     Terrain::Road
                 }
                 _ => Terrain::Blocked,
@@ -313,11 +320,19 @@ pub fn load_grid_from_ascii(
         shelter_agents: std::collections::HashMap::new(),
         distance_to_road: vec![vec![None; ncols as usize]; nrows as usize],
         population: vec![vec![0; ncols as usize]; nrows as usize],
-        tsunami_data: Vec::new()
+        tsunami_data: Vec::new(),
+        nrow: nrows,
+        ncol: ncols
     };
 
     grid.compute_distance_to_shelters();
     grid.compute_road_distances_from_agents();
 
+    // println!("Tsunami data allocated - Estimated memory: {:.1}MB",
+    //     grid.tsunami_data.len() as f64 * grid.tsunami_data[0].len() as f64 * grid.tsunami_data[0][0].len() as f64 * std::mem::size_of::<u32>() as f64 / 1_048_576.0
+    // );
+
     Ok((grid, agents))
 }
+
+        
