@@ -16,7 +16,6 @@ pub struct ShelterAgentTypeData {
     pub teen: u32,
     pub adult: u32,
     pub elder: u32,
-    pub car: u32,
 }
 
 impl Default for ShelterAgentTypeData {
@@ -26,10 +25,13 @@ impl Default for ShelterAgentTypeData {
             teen: 0,
             adult: 0,
             elder: 0,
-            car: 0,
+
         }
     }
 }
+
+const TSUNAMI_DELAY: u32 = 30 * 60;
+const TSUNAMI_SPEED_TIME: u32 = 28;
 
 #[derive(Serialize, Deserialize)]
 pub struct ShelterData {
@@ -62,7 +64,6 @@ pub fn export_agent_statistics(agents: &Vec<crate::game::agent::Agent>) -> std::
             crate::game::agent::AgentType::Teen => "Teen",
             crate::game::agent::AgentType::Adult => "Adult",
             crate::game::agent::AgentType::Elder => "Elder",
-            crate::game::agent::AgentType::Car => "Car",
         };
         *stats.agent_types.entry(agent_type.to_string()).or_insert(0) += 1;
     }
@@ -102,7 +103,6 @@ fn write_grid_to_ascii(filename: &str, model: &Model) -> std::io::Result<()> {
                         AgentType::Teen => "4",
                         AgentType::Adult => "5",
                         AgentType::Elder => "6",
-                        AgentType::Car => "7",
                     }
                     .to_string()
                 } else {
@@ -124,18 +124,121 @@ fn write_grid_to_ascii(filename: &str, model: &Model) -> std::io::Result<()> {
     Ok(())
 }
 
+use rayon::prelude::*;
 use std::{fs, path};
+
+// Structure to store agent data for each step
+#[derive(Clone)]
+struct AgentStepData {
+    x: f64,
+    y: f64,
+    id: usize,
+    agent_type: String,
+    is_on_road: bool,
+    speed: u32,
+    step: u32,
+}
+
+// Structure to collect all agent data throughout simulation
+struct AgentDataCollector {
+    data: Vec<AgentStepData>,
+    grid: Grid,
+}
+
+impl AgentDataCollector {
+    fn new(grid: Grid) -> Self {
+        Self {
+            data: Vec::new(),
+            grid,
+        }
+    }
+
+    fn collect_step(&mut self, model: &Model, step: u32) {
+        for agent in &model.agents {
+            if agent.is_alive {
+                let real_x = model.grid.xllcorner + (agent.x as f64 * model.grid.cellsize);
+                let real_y = model.grid.yllcorner
+                    + (-1.0 * agent.y as f64 * model.grid.cellsize)
+                    + (model.grid.nrow as f64 * model.grid.cellsize);
+
+                self.data.push(AgentStepData {
+                    x: real_x,
+                    y: real_y,
+                    id: agent.id,
+                    agent_type: format!("{:?}", agent.agent_type),
+                    is_on_road: agent.is_on_road,
+                    speed: agent.speed,
+                    step,
+                });
+            }
+        }
+    }
+}
+
+fn export_agents_to_geojson(collector: &AgentDataCollector, filename: &str) -> std::io::Result<()> {
+    use serde_json::{json, Value};
+    use std::collections::HashMap;
+    use std::fs::File;
+    use std::io::Write;
+
+    let mut grouped_data: HashMap<(u32, String), Vec<Vec<f64>>> = HashMap::new();
+
+    for agent_data in &collector.data {
+        let key = (agent_data.step, agent_data.agent_type.clone());
+        let coordinates = grouped_data.entry(key).or_insert_with(Vec::new);
+
+        // Convert grid coordinates to geographic coordinates
+        // let longitude = agent_data.x as f64 * collector.grid.cellsize + collector.grid.xllcorner;
+        // let latitude = agent_data.y as f64 * collector.grid.cellsize + collector.grid.yllcorner;
+
+        coordinates.push(vec![agent_data.x, agent_data.y]);
+    }
+
+    let features: Vec<Value> = grouped_data
+        .into_iter()
+        .map(|((step, agent_type), coordinates)| {
+            json!({
+                "type": "Feature",
+                "geometry": {
+                    "type": "MultiPoint",
+                    "coordinates": coordinates
+                },
+                "properties": {
+                    "timestamp": step,
+                    "agent_type": agent_type
+                }
+            })
+        })
+        .collect();
+
+    let geojson = json!({
+        "type": "FeatureCollection",
+        "crs": {
+            "type": "name",
+            "properties": {
+                "name": "EPSG:4326"
+            }
+        },
+        "features": features
+    });
+
+    let mut file = File::create(filename)?;
+    file.write_all(serde_json::to_string_pretty(&geojson)?.as_bytes())?;
+
+    Ok(())
+}
+
 fn main() -> io::Result<()> {
     // Muat grid dan agen dari file ASC
     let (mut grid, mut agents) =
-        load_grid_from_ascii("./data_pacitan/jalandantes2m.asc").expect("Failed to load grid");
+        load_grid_from_ascii("./19feb/jalantes.asc").expect("Failed to load grid");
 
     println!("grid width : {}, grid height {}", grid.width, grid.height);
 
     let mut next_agent_id = agents.len();
 
     let _ = load_population_and_create_agents(
-        "./data_pacitan/agent2mboundariesjalan_reprojected.asc",
+        "./19feb/agenbener2m.asc",
         grid.width,
         grid.height,
         &mut grid,
@@ -145,9 +248,9 @@ fn main() -> io::Result<()> {
     .expect("Failed to populate grid");
 
     export_agent_statistics(&agents).expect("Failed to export agent statistics");
-    
+
     let tsunami_data = read_tsunami_data(
-        "./data_pacitan/tsunami_pacitan/tsunami_pacitan_all",
+        "./data_pacitan/tsunami_pacitan/tsunami_pacitan_2/asc",
         grid.width,
         grid.height,
     )
@@ -155,7 +258,7 @@ fn main() -> io::Result<()> {
 
     println!("Loaded {} tsunami data files", tsunami_data.len());
     grid.tsunami_data = tsunami_data;
-    let tsunami_len = grid.tsunami_data.len();
+    let tsunami_len = grid.tsunami_data.len() - 1;
     println!("Number of tsunami data {}", tsunami_len);
 
     fs::create_dir_all("output").expect("Gagal membuat folder output");
@@ -171,28 +274,17 @@ fn main() -> io::Result<()> {
     let mut shelter_json_counter: Vec<serde_json::Value> = Vec::new();
     let mut current_step = 0;
 
-    let num_steps = 100;
+    let mut is_playing = true;
 
-    while current_step < num_steps {
-        let mut is_tsunami = false;
-        let mut index = -1 as isize;
+    let mut agent_data_collector = AgentDataCollector::new(model.grid.clone());
 
-        if current_step % 4 == 0 && current_step != 0 {
-            is_tsunami = true;
-
-            if index > tsunami_len as isize {
-                continue;
-            } else {
-                index += 1;
-            }
-        }
-
-        model.step(current_step, is_tsunami, index as usize);
-        println!("Step {}", current_step);
-
-        if current_step % 10 == 0 {
+    let mut index = 0;
+    let mut is_tsunami = false;
+    while is_playing {
+        
+        if current_step % 30 == 0 {
             let mut dead_agent_counts = DeadAgentTypeData::default();
-            
+
             // Count dead agents by type
             for agent in &model.dead_agent_types {
                 match agent {
@@ -200,7 +292,6 @@ fn main() -> io::Result<()> {
                     AgentType::Teen => dead_agent_counts.teen += 1,
                     AgentType::Adult => dead_agent_counts.adult += 1,
                     AgentType::Elder => dead_agent_counts.elder += 1,
-                    AgentType::Car => dead_agent_counts.car += 1,
                 }
                 dead_agent_counts.total += 1;
             }
@@ -212,18 +303,17 @@ fn main() -> io::Result<()> {
                     "teen": dead_agent_counts.teen,
                     "adult": dead_agent_counts.adult,
                     "elder": dead_agent_counts.elder,
-                    "car": dead_agent_counts.car,
                     "total": dead_agent_counts.total
                 }
             }));
 
             // Add step information to shelter data
-            let mut shelter_info: HashMap<String, ShelterAgentTypeData> = model
+            let shelter_info: HashMap<String, ShelterAgentTypeData> = model
                 .grid
                 .shelters
                 .iter()
                 .map(|&(_, _, id)| {
-                    let key = format!("shelter_{}", id);
+                    let key = format!("shelter_{}_{}", id, current_step as u32);
                     let count = model
                         .grid
                         .shelter_agents
@@ -236,7 +326,7 @@ fn main() -> io::Result<()> {
                                     AgentType::Teen => shelter_agent_type_data.teen += 1,
                                     AgentType::Adult => shelter_agent_type_data.adult += 1,
                                     AgentType::Elder => shelter_agent_type_data.elder += 1,
-                                    AgentType::Car => shelter_agent_type_data.car += 1,
+                                    
                                 }
                             }
                             shelter_agent_type_data
@@ -246,24 +336,39 @@ fn main() -> io::Result<()> {
                 })
                 .collect();
 
-            shelter_info.insert("step".to_string(), ShelterAgentTypeData {
-                child: current_step as u32,
-                teen: 0,
-                adult: 0,
-                elder: 0,
-                car: 0,
-            });
-
             shelter_json_counter.push(json!(shelter_info));
 
-            let filename = format!("output/step_{}.asc", current_step);
-            if let Err(e) = write_grid_to_ascii(&filename, &model) {
-                eprintln!("Error writing {}: {}", filename, e);
-            } else {
-                println!("Saved output to {}", filename);
+            // let filename = format!("output/step_{}.asc", current_step);
+            // if let Err(e) = write_grid_to_ascii(&filename, &model) {
+            //     eprintln!("Error writing {}: {}", filename, e);
+            // } else {
+            //     println!("Saved output to {}", filename);
+            // }
+
+            agent_data_collector.collect_step(&model, current_step);
+        }
+        if current_step > TSUNAMI_DELAY {
+            is_tsunami = true;
+
+            if current_step % TSUNAMI_SPEED_TIME == 0 && current_step != 0 && is_tsunami {
+                if index > tsunami_len {
+                    is_playing = false;
+
+                    break;
+                } else {
+                    index += 1;
+                }
             }
         }
+        if index > tsunami_len {
+            is_playing = false;
+            break;
+        }
 
+
+        model.step(current_step, is_tsunami, index);
+        println!("Step : {} Tsunami Index : {}", current_step, index);
+        
         current_step += 1;
     }
 
@@ -272,6 +377,7 @@ fn main() -> io::Result<()> {
         eprintln!("Error saving shelter data: {}", e);
     }
 
+    export_agents_to_geojson(&agent_data_collector, "output/step.geojson")?;
     Ok(())
 }
 
@@ -281,7 +387,6 @@ pub struct DeadAgentTypeData {
     pub teen: u32,
     pub adult: u32,
     pub elder: u32,
-    pub car: u32,
     pub total: u32,
 }
 
@@ -338,26 +443,29 @@ pub fn load_population_and_create_agents(
     // Iterasi data populasi dan tambahkan agen untuk setiap unit populasi
     for (y, row) in population.iter().enumerate() {
         for (x, &pop) in row.iter().enumerate() {
-            for _ in 0..pop {
-                let is_on_road = grid.terrain[y][x] == Terrain::Road;
-                let agent_type = crate::game::agent::AgentType::random();
-
-                let mut agent = crate::game::agent::Agent::new(
-                    *next_agent_id,
-                    x as u32,
-                    y as u32,
-                    agent_type,
-                    is_on_road,
-                );
-                // Inisialisasi lebih lanjut untuk agen
-                agent.id = *next_agent_id;
-                agent.remaining_steps = agent.speed;
-                agent.is_on_road = is_on_road;
-
-                // Tambahkan agen ke grid dan vektor agen
-                grid.add_agent(x as u32, y as u32, agent.id);
-                agents.push(agent);
-                *next_agent_id += 1;
+            // println!("pop {pop}");
+            if pop != 0 {
+                for _ in 0..1 {
+                    let is_on_road = grid.terrain[y][x] == Terrain::Road;
+                    let agent_type = crate::game::agent::AgentType::random();
+    
+                    let mut agent = crate::game::agent::Agent::new(
+                        *next_agent_id,
+                        x as u32,
+                        y as u32,
+                        agent_type,
+                        is_on_road,
+                    );
+                    // Inisialisasi lebih lanjut untuk agen
+                    agent.id = *next_agent_id;
+                    agent.remaining_steps = agent.speed;
+                    agent.is_on_road = is_on_road;
+    
+                    // Tambahkan agen ke grid dan vektor agen
+                    grid.add_agent(x as u32, y as u32, agent.id);
+                    agents.push(agent);
+                    *next_agent_id += 1;
+                }
             }
         }
     }
@@ -367,6 +475,8 @@ pub fn load_population_and_create_agents(
 
 pub fn load_population_from_ascii(path: &str, ncols: u32, nrows: u32) -> io::Result<Vec<Vec<u32>>> {
     let file = std::fs::File::open(path)?;
+
+
     let reader = io::BufReader::new(file);
     let mut lines = reader.lines();
 
@@ -442,30 +552,45 @@ fn read_tsunami_data(dir_path: &str, ncols: u32, nrows: u32) -> io::Result<Vec<V
         .filter(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())
-                .map(|name| name.starts_with("asc_tsunami_pacitan_") && name.ends_with(".asc"))
+                // .map(|name| name.starts_with("asc_tsunami_pacitan_") && name.ends_with(".asc"))
+                .map(|name| name.ends_with(".asc"))
                 .unwrap_or(false)
         })
         .collect();
 
-    // Sort files by their numeric index
+    // Sort files by their numeric index (keep this sequential for correct ordering)
     tsunami_files.sort_by_key(|path| {
         path.file_name()
             .and_then(|name| name.to_str())
-            .and_then(|name| name.trim_start_matches("asc_tsunami_pacitan_")
-                          .trim_end_matches(".asc")
-                          .parse::<u32>()
-                          .ok())
+            .and_then(|name| {
+                name.trim_start_matches("aav_rep_z_04_")
+                    .trim_end_matches(".asc")
+                    .parse::<u32>()
+                    .ok()
+            })
             .unwrap_or(0)
     });
 
-    // Read all tsunami data files
-    let mut all_tsunami_data = Vec::new();
-    for file_path in tsunami_files {
-        match read_tsunami_data_file(&file_path, ncols, nrows) {
-            Ok(data) => all_tsunami_data.push(data),
-            Err(e) => eprintln!("Error reading tsunami file {:?}: {}", file_path, e),
-        }
-    }
+    tsunami_files = tsunami_files
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| i % 4 == 0) // Keep 1st, 5th, 9th, etc.
+        .map(|(_, path)| path)
+        .collect();
+
+    // Process tsunami data files in parallel
+    let all_tsunami_data: Vec<_> = tsunami_files
+        .par_iter()
+        .filter_map(
+            |file_path| match read_tsunami_data_file(file_path, ncols, nrows) {
+                Ok(data) => Some(data),
+                Err(e) => {
+                    eprintln!("Error reading tsunami file {:?}: {}", file_path, e);
+                    None
+                }
+            },
+        )
+        .collect();
 
     if all_tsunami_data.is_empty() {
         return Err(io::Error::new(
@@ -476,3 +601,4 @@ fn read_tsunami_data(dir_path: &str, ncols: u32, nrows: u32) -> io::Result<Vec<V
 
     Ok(all_tsunami_data)
 }
+
