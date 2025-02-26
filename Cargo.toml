@@ -1,6 +1,6 @@
 [package]
 name = "tsunami_simulation"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["fabhianto.maoludyo@gmail.com"]
 description = "A tsunami evacuation simulation library"
