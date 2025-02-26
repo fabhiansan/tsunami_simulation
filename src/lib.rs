@@ -16,7 +16,40 @@ pub use game::agent;
 pub use game::game as simulation_game; // Renamed to avoid conflict
 pub use game::grid;
 
-// Constants
+/// Configuration for the tsunami simulation parameters
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimulationConfig {
+    /// Delay in time steps before tsunami starts (default: 30 * 60)
+    pub tsunami_delay: u32,
+    /// Time steps between tsunami propagation updates (default: 28)
+    pub tsunami_speed_time: u32,
+    /// Distribution weights for population distribution (default: [10, 20, 30, 15, 20])
+    pub distribution_weights: [i32; 5],
+    /// Base movement speed for agents in meters per second (default: 2.66)
+    pub base_speed: f64,
+    /// Speed multipliers for different agent types [Child, Teen, Adult, Elder]
+    pub agent_speed_multipliers: [f64; 4],
+    /// Distribution weights for agent types [Child, Teen, Adult, Elder]
+    pub agent_type_weights: [f64; 4],
+    /// Interval for collecting agent data (default: 30 steps)
+    pub data_collection_interval: u32,
+}
+
+impl Default for SimulationConfig {
+    fn default() -> Self {
+        SimulationConfig {
+            tsunami_delay: 30 * 60,
+            tsunami_speed_time: 28,
+            distribution_weights: [10, 20, 30, 15, 20],
+            base_speed: 2.66,
+            agent_speed_multipliers: [0.8, 1.0, 1.0, 0.7],
+            agent_type_weights: [6.21, 13.41, 59.10, 19.89],
+            data_collection_interval: 30,
+        }
+    }
+}
+
+// Legacy constants for backward compatibility
 pub const TSUNAMI_DELAY: u32 = 30 * 60;
 pub const TSUNAMI_SPEED_TIME: u32 = 28;
 pub const DISTRIBUTION_WEIGHTS: [i32; 5] = [10, 20, 30, 15, 20];
@@ -245,17 +278,30 @@ pub fn export_agent_statistics(agents: &Vec<Agent>) -> io::Result<()> {
     Ok(())
 }
 
-// Create a new Simulation struct to handle the simulation state
+/// Main Simulation struct that handles the simulation state
 pub struct Simulation {
+    /// The underlying simulation model
     pub model: Model,
+    /// Collects agent data for analysis and visualization
     pub agent_data_collector: AgentDataCollector,
+    /// Current simulation step
     pub current_step: u32,
+    /// Whether tsunami has started
     pub is_tsunami: bool,
+    /// Current tsunami propagation index
     pub tsunami_index: usize,
+    /// Configuration for the simulation
+    pub config: SimulationConfig,
 }
 
 impl Simulation {
+    /// Create a new simulation with default configuration
     pub fn new(grid_path: &str, population_path: &str) -> io::Result<Self> {
+        Self::with_config(grid_path, population_path, SimulationConfig::default())
+    }
+
+    /// Create a new simulation with custom configuration
+    pub fn with_config(grid_path: &str, population_path: &str, config: SimulationConfig) -> io::Result<Self> {
         let (mut grid, mut agents) = load_grid_from_ascii(grid_path)?;
         let mut next_agent_id = agents.len();
 
@@ -281,30 +327,68 @@ impl Simulation {
             current_step: 0,
             is_tsunami: false,
             tsunami_index: 0,
+            config,
         })
     }
 
+    /// Builder-style method to set configuration
+    pub fn with_tsunami_delay(mut self, delay: u32) -> Self {
+        self.config.tsunami_delay = delay;
+        self
+    }
+
+    /// Builder-style method to set tsunami speed time
+    pub fn with_tsunami_speed_time(mut self, speed_time: u32) -> Self {
+        self.config.tsunami_speed_time = speed_time;
+        self
+    }
+
+    /// Builder-style method to set data collection interval
+    pub fn with_data_collection_interval(mut self, interval: u32) -> Self {
+        self.config.data_collection_interval = interval;
+        self
+    }
+
+    /// Run a single simulation step, returns false when simulation should end
     pub fn step(&mut self) -> bool {
         // Return false when simulation should end
         if self.tsunami_index > self.model.grid.tsunami_data.len() - 1 {
             return false;
         }
 
-        if self.current_step > TSUNAMI_DELAY {
+        if self.current_step > self.config.tsunami_delay {
             self.is_tsunami = true;
 
-            if self.current_step % TSUNAMI_SPEED_TIME == 0 && self.current_step != 0 && self.is_tsunami {
+            if self.current_step % self.config.tsunami_speed_time == 0 && 
+               self.current_step != 0 && 
+               self.is_tsunami {
                 self.tsunami_index += 1;
             }
         }
 
         self.model.step(self.current_step, self.is_tsunami, self.tsunami_index);
         
-        if self.current_step % 30 == 0 {
+        if self.current_step % self.config.data_collection_interval == 0 {
             self.agent_data_collector.collect_step(&self.model, self.current_step);
         }
 
         self.current_step += 1;
         true
+    }
+    
+    /// Run the simulation for a specified number of steps or until completion
+    pub fn run(&mut self, max_steps: Option<u32>) -> io::Result<()> {
+        let mut step_count = 0;
+        
+        while self.step() {
+            if let Some(max) = max_steps {
+                step_count += 1;
+                if step_count >= max {
+                    break;
+                }
+            }
+        }
+        
+        Ok(())
     }
 } 

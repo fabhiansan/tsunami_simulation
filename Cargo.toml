@@ -3,9 +3,12 @@ name = "tsunami_simulation"
 version = "0.1.1"
 edition = "2021"
 authors = ["fabhianto.maoludyo@gmail.com"]
-description = "A tsunami evacuation simulation library"
+description = "A tsunami evacuation simulation library with customizable agent-based modeling"
 license = "MIT"
 repository = "https://github.com/fabhiansan/tsunami_simulation"
+keywords = ["tsunami", "simulation", "agent-based", "evacuation", "modeling"]
+categories = ["simulation", "science"]
+readme = "README.md"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -20,4 +23,8 @@ path = "src/lib.rs"
 [[bin]]
 name = "tsunami_simulation"
 path = "src/bin/tsunami_simulation.rs"
+
+[[example]]
+name = "custom_simulation"
+path = "examples/custom_simulation.rs"
 
