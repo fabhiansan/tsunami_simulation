@@ -1,4 +1,6 @@
 mod game;
+#[cfg(test)]
+mod tests;
 
 use game::agent::{Agent, AgentType};
 use game::game::Model;
@@ -6,15 +8,16 @@ use game::grid::{load_grid_from_ascii, Grid, Terrain};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io;
-use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
-use rayon::prelude::*;
+use std::fs::File;
 
 // Re-export important types and modules
 pub use game::agent;
 pub use game::game as simulation_game; // Renamed to avoid conflict
 pub use game::grid;
+
+// Export API module for web server implementation
+pub mod api;
 
 /// Configuration for the tsunami simulation parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,14 +101,14 @@ pub struct AgentDataCollector {
 }
 
 #[derive(Clone)]
-struct AgentStepData {
-    x: f64,
-    y: f64,
-    id: usize,
-    agent_type: String,
-    is_on_road: bool,
-    speed: u32,
-    step: u32,
+pub struct AgentStepData {
+    pub x: f64,
+    pub y: f64,
+    pub id: usize,
+    pub agent_type: String,
+    pub is_on_road: bool,
+    pub speed: u32,
+    pub step: u32,
 }
 
 impl AgentDataCollector {
@@ -264,12 +267,13 @@ pub fn export_agent_statistics(agents: &Vec<Agent>) -> io::Result<()> {
 
     for agent in agents {
         let agent_type = match agent.agent_type {
-            AgentType::Child => "Child",
-            AgentType::Teen => "Teen",
-            AgentType::Adult => "Adult",
-            AgentType::Elder => "Elder",
+            AgentType::Child => "Child".to_string(),
+            AgentType::Teen => "Teen".to_string(),
+            AgentType::Adult => "Adult".to_string(),
+            AgentType::Elder => "Elder".to_string(),
+            AgentType::Custom(multiplier) => format!("Custom({})", multiplier),
         };
-        *stats.agent_types.entry(agent_type.to_string()).or_insert(0) += 1;
+        *stats.agent_types.entry(agent_type).or_insert(0) += 1;
     }
 
     let json = serde_json::to_string_pretty(&stats)?;
@@ -352,7 +356,8 @@ impl Simulation {
     /// Run a single simulation step, returns false when simulation should end
     pub fn step(&mut self) -> bool {
         // Return false when simulation should end
-        if self.tsunami_index > self.model.grid.tsunami_data.len() - 1 {
+        if !self.model.grid.tsunami_data.is_empty() && 
+           self.tsunami_index > self.model.grid.tsunami_data.len() - 1 {
             return false;
         }
 
@@ -391,4 +396,4 @@ impl Simulation {
         
         Ok(())
     }
-} 
+}

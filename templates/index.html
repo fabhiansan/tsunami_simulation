@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tsunami Simulation Results</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.9.2/proj4.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+        }
+        #map {
+            width: 100%;
+            height: 85vh;
+        }
+        .controls {
+            padding: 20px;
+            background: #f5f5f5;
+            text-align: center;
+        }
+        .controls button {
+            margin: 0 10px;
+            padding: 8px 15px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        #timestep-info {
+            margin: 10px 0;
+            font-size: 16px;
+        }
+        #timeline {
+            width: 80%;
+            margin: 10px auto;
+        }
+        .legend {
+            padding: 6px 8px;
+            background: white;
+            background: rgba(255,255,255,0.8);
+            box-shadow: 0 0 15px rgba(0,0,0,0.2);
+            border-radius: 5px;
+            line-height: 24px;
+        }
+        .legend i {
+            width: 18px;
+            height: 18px;
+            float: left;
+            margin-right: 8px;
+            opacity: 0.7;
+        }
+        .loading {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(255, 255, 255, 0.9);
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            z-index: 1000;
+        }
+        #status {
+            margin: 10px 0;
+            font-style: italic;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div class="controls">
+        <button id="prev-step">Previous Step</button>
+        <button id="play-pause">Play</button>
+        <button id="next-step">Next Step</button>
+        <div id="timestep-info">Timestep: 0</div>
+        <input type="range" id="timeline" min="0" max="480" value="0">
+        <div id="status">Loading...</div>
+    </div>
+
+    <script>
+        // Global variables
+        let map = null;
+        let currentStep = 0;
+        let maxSteps = 480;
+        let availableTimesteps = [];
+        let isPlaying = false;
+        let animationInterval = null;
+        let timestepCache = new Map();
+        const playPauseBtn = document.getElementById('play-pause');
+        const prevStepBtn = document.getElementById('prev-step');
+        const nextStepBtn = document.getElementById('next-step');
+        const timeline = document.getElementById('timeline');
+        const timestepInfo = document.getElementById('timestep-info');
+        const status = document.getElementById('status');
+        let currentLayer = null;
+
+        // Definisi proyeksi UTM Zone 49S
+        proj4.defs('EPSG:32749', '+proj=utm +zone=49 +south +datum=WGS84 +units=m +no_defs');
+        
+        // Fungsi untuk mengkonversi koordinat UTM ke LatLng
+        function utmToLatLng(x, y) {
+            try {
+                // Validate coordinates before conversion
+                if (!isFinite(x) || !isFinite(y) || x === null || y === null) {
+                    console.error('Invalid input coordinates:', { x, y });
+                    return null;
+                }
+                
+                // Convert to numbers to ensure proper handling
+                x = Number(x);
+                y = Number(y);
+                
+                // Additional validation after conversion
+                if (isNaN(x) || isNaN(y)) {
+                    console.error('Coordinates converted to NaN:', { x, y });
+                    return null;
+                }
+                
+                const [lng, lat] = proj4('EPSG:32749', 'EPSG:4326', [x, y]);
+                
+                if (!isFinite(lat) || !isFinite(lng)) {
+                    console.error('Invalid conversion result:', {lat, lng});
+                    return null;
+                }
+                return [lat, lng];
+            } catch (error) {
+                console.error('Error converting coordinates:', error);
+                return null;
+            }
+        }
+
+        // Inisialisasi peta dengan lokasi awal di Indonesia
+        function initMap() {
+            // Inisialisasi peta dengan lokasi awal di Indonesia
+            map = L.map('map').setView([-8.4095, 115.1889], 8);
+            
+            // Tambahkan layer peta dasar
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            }).addTo(map);
+            
+            // Tambahkan skala
+            L.control.scale().addTo(map);
+            
+            // Tambahkan legenda
+            addLegend();
+            
+            return map;
+        }
+        
+        // Fungsi untuk menambahkan legenda
+        function addLegend() {
+            const legend = L.control({position: 'bottomright'});
+            legend.onAdd = function (map) {
+                const div = L.DomUtil.create('div', 'legend');
+                div.innerHTML = `
+                    <i style="background: #ff0000"></i>Adult<br>
+                    <i style="background: #00ff00"></i>Child<br>
+                    <i style="background: #0000ff"></i>Elder<br>
+                `;
+                return div;
+            };
+            legend.addTo(map);
+        }
+        
+        // Fungsi untuk memuat metadata
+        async function loadMetadata() {
+            try {
+                status.textContent = 'Loading simulation metadata...';
+                const response = await fetch('http://localhost:5001/data/metadata');
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const metadata = await response.json();
+                
+                // Check if metadata is null or undefined
+                if (!metadata) {
+                    throw new Error('Received null or undefined metadata from server');
+                }
+                
+                // Handle the case where there's an error message but not a true error
+                if (metadata.error) {
+                    console.warn('Metadata contains an error message:', metadata.error);
+                    status.textContent = `Warning: ${metadata.error}. ${metadata.suggestion || ''}`;
+                    // Continue processing with default values, don't throw
+                }
+                
+                // Ensure all required properties exist with defaults
+                maxSteps = metadata.max_timestamp || 0;
+                availableTimesteps = metadata.all_timesteps || [];
+                
+                // Update timeline with actual timesteps
+                timeline.min = metadata.min_timestamp || 0;
+                timeline.max = maxSteps || 100; // Provide a default max even if 0
+                timeline.step = 20; // Adjust step size based on timestep intervals
+                
+                const validCoords = metadata.valid_coords || 0;
+                const invalidCoords = metadata.invalid_coords || 0;
+                
+                // Only update status if we haven't already set it to an error message
+                if (!metadata.error) {
+                    status.textContent = `Loaded metadata. Total agents: ${metadata.total_agents || 0}, Timesteps: ${availableTimesteps.length}, Valid coordinates: ${validCoords}, Invalid: ${invalidCoords}`;
+                }
+                
+                return metadata;
+            } catch (error) {
+                console.error('Error loading metadata:', error);
+                status.textContent = `Error loading metadata: ${error.message}`;
+                // Return a default metadata object to prevent null reference errors
+                return {
+                    max_timestamp: 0,
+                    min_timestamp: 0,
+                    all_timesteps: [],
+                    total_agents: 0,
+                    valid_coords: 0,
+                    invalid_coords: 0
+                };
+            }
+        }
+
+        // Fungsi untuk memuat data timestep
+        async function loadTimestepData(step) {
+            if (timestepCache.has(step)) {
+                return timestepCache.get(step);
+            }
+
+            try {
+                // Check if the timestep is available before making the request
+                if (!availableTimesteps.includes(step)) {
+                    throw new Error(`Timestep ${step} is not available in the simulation data`);
+                }
+                
+                status.textContent = `Loading timestep ${step}...`;
+                const response = await fetch(`http://localhost:5001/data/timestep/${step}`);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const data = await response.json();
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+
+                timestepCache.set(step, data);
+                status.textContent = `Loaded timestep ${step}`;
+                return data;
+            } catch (error) {
+                console.error(`Error loading timestep ${step}:`, error);
+                status.textContent = `Error loading timestep ${step}: ${error.message}`;
+                return null;
+            }
+        }
+
+        // Fungsi untuk preload beberapa timestep pertama
+        async function preloadInitialData(count = 5) {
+            status.textContent = 'Preloading initial timesteps...';
+            try {
+                // Only preload available timesteps
+                const timestepsToPreload = availableTimesteps.slice(0, count);
+                for (let i = 0; i < timestepsToPreload.length; i++) {
+                    await loadTimestepData(timestepsToPreload[i]);
+                }
+                status.textContent = `Preloaded first ${timestepsToPreload.length} timesteps`;
+            } catch (error) {
+                console.error('Error preloading data:', error);
+                status.textContent = `Error preloading data: ${error.message}`;
+            }
+        }
+
+        // Fungsi untuk mengaktifkan kontrol
+        function enableControls() {
+            playPauseBtn.disabled = false;
+            prevStepBtn.disabled = false;
+            nextStepBtn.disabled = false;
+            timeline.disabled = false;
+        }
+
+        // Fungsi untuk mendapatkan warna berdasarkan tipe agen
+        function getAgentColor(type) {
+            switch(type) {
+                case 'Adult':
+                    return '#ff0000';
+                case 'Child':
+                    return '#00ff00';
+                case 'Elder':
+                    return '#0000ff';
+                default:
+                    return '#999999';
+            }
+        }
+
+        // Fungsi untuk memperbarui visualisasi
+        async function updateVisualization(step) {
+            try {
+                if (currentLayer) {
+                    map.removeLayer(currentLayer);
+                }
+
+                const data = await loadTimestepData(step);
+                if (!data) return;
+
+                const features = [];
+                let validCoordinatesCount = 0;
+                let invalidCoordinatesCount = 0;
+                
+                for (let i = 0; i < data.x.length; i++) {
+                    try {
+                        // Skip if coordinates are invalid
+                        if (data.x[i] === null || data.y[i] === null || 
+                            !isFinite(data.x[i]) || !isFinite(data.y[i])) {
+                            invalidCoordinatesCount++;
+                            continue;
+                        }
+                        
+                        const latLng = utmToLatLng(data.x[i], data.y[i]);
+                        if (latLng) {
+                            validCoordinatesCount++;
+                            features.push({
+                                type: 'Feature',
+                                properties: { agent_type: data.types[i] },
+                                geometry: {
+                                    type: 'Point',
+                                    coordinates: [latLng[1], latLng[0]] // Create new array instead of using reverse()
+                                }
+                            });
+                        } else {
+                            invalidCoordinatesCount++;
+                        }
+                    } catch (err) {
+                        console.error(`Error processing coordinate at index ${i}:`, err);
+                        invalidCoordinatesCount++;
+                    }
+                }
+
+                if (features.length === 0) {
+                    status.textContent = `No valid coordinates found for timestep ${step}. Invalid: ${invalidCoordinatesCount}`;
+                    return;
+                }
+
+                currentLayer = L.geoJSON({
+                    type: 'FeatureCollection',
+                    features: features
+                }, {
+                    pointToLayer: function(feature, latlng) {
+                        return L.circleMarker(latlng, {
+                            radius: 8,
+                            fillColor: getAgentColor(feature.properties.agent_type),
+                            color: '#000',
+                            weight: 1,
+                            opacity: 1,
+                            fillOpacity: 0.8
+                        });
+                    }
+                }).addTo(map);
+
+                if (step === 0 && currentLayer.getBounds && currentLayer.getLayers().length > 0) {
+                    const bounds = currentLayer.getBounds();
+                    if (bounds && bounds.isValid()) {
+                        map.fitBounds(bounds);
+                    }
+                }
+
+                timestepInfo.textContent = `Time: ${step} seconds`;
+                timeline.value = step;
+                status.textContent = `Showing ${features.length} agents at timestep ${step} (Invalid: ${invalidCoordinatesCount})`;
+            } catch (error) {
+                console.error('Error updating visualization:', error);
+                status.textContent = `Error updating visualization: ${error.message}`;
+            }
+        }
+
+        // Event listeners untuk kontrol
+        playPauseBtn.addEventListener('click', () => {
+            isPlaying = !isPlaying;
+            playPauseBtn.textContent = isPlaying ? 'Pause' : 'Play';
+            
+            if (isPlaying) {
+                animationInterval = setInterval(() => {
+                    // Find next available timestep
+                    let nextIndex = availableTimesteps.indexOf(currentStep);
+                    if (nextIndex === -1 || nextIndex === availableTimesteps.length - 1) {
+                        // If current step not found or is the last one, go back to first timestep
+                        currentStep = availableTimesteps[0];
+                    } else {
+                        // Move to next available timestep
+                        currentStep = availableTimesteps[nextIndex + 1];
+                    }
+                    updateVisualization(currentStep);
+                }, 1000);
+            } else {
+                clearInterval(animationInterval);
+            }
+        });
+
+        prevStepBtn.addEventListener('click', () => {
+            let prevIndex = availableTimesteps.indexOf(currentStep);
+            if (prevIndex > 0) {
+                currentStep = availableTimesteps[prevIndex - 1];
+            } else {
+                currentStep = availableTimesteps[availableTimesteps.length - 1];
+            }
+            updateVisualization(currentStep);
+            if (isPlaying) {
+                isPlaying = false;
+                playPauseBtn.textContent = 'Play';
+                clearInterval(animationInterval);
+            }
+        });
+
+        nextStepBtn.addEventListener('click', () => {
+            let nextIndex = availableTimesteps.indexOf(currentStep);
+            if (nextIndex < availableTimesteps.length - 1) {
+                currentStep = availableTimesteps[nextIndex + 1];
+            } else {
+                currentStep = availableTimesteps[0];
+            }
+            updateVisualization(currentStep);
+            if (isPlaying) {
+                isPlaying = false;
+                playPauseBtn.textContent = 'Play';
+                clearInterval(animationInterval);
+            }
+        });
+
+        timeline.addEventListener('input', (e) => {
+            const targetValue = parseInt(e.target.value);
+            
+            // Find the closest available timestep
+            if (!availableTimesteps.includes(targetValue)) {
+                const closest = availableTimesteps.reduce((prev, curr) => {
+                    return (Math.abs(curr - targetValue) < Math.abs(prev - targetValue) ? curr : prev);
+                });
+                currentStep = closest;
+            } else {
+                currentStep = targetValue;
+            }
+            
+            updateVisualization(currentStep);
+            if (isPlaying) {
+                isPlaying = false;
+                playPauseBtn.textContent = 'Play';
+                clearInterval(animationInterval);
+            }
+        });
+
+        // Inisialisasi aplikasi
+        async function init() {
+            try {
+                // First load metadata to get available timesteps
+                const metadata = await loadMetadata();
+                
+                // Initialize the map even if there are no timesteps
+                if (!map) {
+                    initMap();
+                }
+                
+                // Check if we have timesteps available
+                if (availableTimesteps && availableTimesteps.length > 0) {
+                    // Set current step to the first available timestep
+                    currentStep = availableTimesteps[0];
+                    status.textContent = `Starting with timestep ${currentStep}`;
+                    
+                    try {
+                        // Preload initial data
+                        await preloadInitialData(5);
+                        
+                        // Update visualization with the first timestep
+                        await updateVisualization(currentStep);
+                        
+                        // Enable controls after successful initialization
+                        enableControls();
+                    } catch (vizError) {
+                        console.error('Error during visualization initialization:', vizError);
+                        status.textContent = `Error during visualization: ${vizError.message}. Try refreshing the page.`;
+                    }
+                } else {
+                    // Still show the map even if there are no timesteps
+                    status.textContent = "No timesteps available in the simulation data. Check the GeoJSON file.";
+                    
+                    // Add a message on the map
+                    L.popup()
+                        .setLatLng([0, 0])
+                        .setContent("<div style='text-align:center'><h3>No simulation data available</h3><p>The GeoJSON file contains no valid timesteps or coordinates.</p><p>Please check the file format and try again.</p></div>")
+                        .openOn(map);
+                    
+                    // Disable controls since there's no data
+                    disableControls();
+                }
+            } catch (error) {
+                console.error('Error initializing application:', error);
+                status.textContent = `Error initializing application: ${error.message}. Try refreshing the page.`;
+                
+                // Initialize the map even in case of error
+                if (!map) {
+                    initMap();
+                }
+                
+                // Add an error message on the map
+                L.popup()
+                    .setLatLng([0, 0])
+                    .setContent(`<div style='text-align:center'><h3>Error Loading Data</h3><p>${error.message}</p><p>Please check the console for more details.</p></div>`)
+                    .openOn(map);
+                
+                // Disable controls since there's an error
+                disableControls();
+            }
+        }
+        
+        // Function to disable controls when there's no data
+        function disableControls() {
+            document.getElementById('prev-step').disabled = true;
+            document.getElementById('next-step').disabled = true;
+            document.getElementById('play-pause').disabled = true;
+            document.getElementById('timeline').disabled = true;
+        }
+        
+        // Memulai aplikasi
+        init();
+    </script>
+</body>
+</html>

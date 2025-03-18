@@ -1,7 +1,4 @@
-use rand::seq::SliceRandom; // Impor trait SliceRandom
-
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
 
 #[derive(Eq, PartialEq)]
 pub struct State {

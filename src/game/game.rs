@@ -13,10 +13,10 @@ pub struct Model {
 }
 
 impl Model {
-    pub fn step(&mut self, step: u32, is_tsunami: bool, tsunami_number: usize) {
+    pub fn step(&mut self, _step: u32, is_tsunami: bool, tsunami_number: usize) {
         let mut dead_agents_this_step = 0;
 
-        if is_tsunami {
+        if is_tsunami && !self.grid.tsunami_data.is_empty() && tsunami_number < self.grid.tsunami_data.len() {
             println!("TSUNAMI IS COMMING ----- {}", tsunami_number);
             let tsunami_data = self.grid.tsunami_data[tsunami_number].clone();
 
@@ -41,10 +41,13 @@ impl Model {
             }
             println!("Jumlah agen mati pada step ini: {}", dead_agents_this_step);
 
-            for row in self.grid.tsunami_data[tsunami_number].iter_mut() {
-                for cell in row.iter_mut() {
-                    if *cell != 0 {
-                        *cell = 10;
+            // Update tsunami cells if tsunami data exists
+            if tsunami_number < self.grid.tsunami_data.len() {
+                for row in self.grid.tsunami_data[tsunami_number].iter_mut() {
+                    for cell in row.iter_mut() {
+                        if *cell != 0 {
+                            *cell = 10;
+                        }
                     }
                 }
             }
@@ -269,6 +272,7 @@ impl Model {
                     AgentType::Teen => counts.teen += 1,
                     AgentType::Adult => counts.adult += 1,
                     AgentType::Elder => counts.elder += 1,
+                    AgentType::Custom(_) => counts.adult += 1, // Treat custom as adult for counting
                 }
             }
         }

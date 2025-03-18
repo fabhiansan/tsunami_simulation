@@ -1,4 +1,4 @@
-use crate::game::agent::{Agent, AgentType};
+use crate::game::agent::AgentType;
 use crate::game::State;
 use std::collections::BinaryHeap;
 use std::collections::{HashMap, VecDeque};
@@ -19,7 +19,7 @@ pub enum Terrain {
 }
 
 /// Configuration for the simulation grid
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GridConfig {
     /// Penalty for moving through blocked terrain
     pub blocked_penalty: u32,
